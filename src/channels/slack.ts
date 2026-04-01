@@ -35,7 +35,11 @@ export class SlackChannel implements Channel {
   private app: App;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: Array<{ jid: string; text: string; threadTs?: string }> = [];
+  private outgoingQueue: Array<{
+    jid: string;
+    text: string;
+    threadTs?: string;
+  }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
 

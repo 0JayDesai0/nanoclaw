@@ -221,7 +221,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   //
   // Structure: each group carries the thread's reply target and the messages
   // to send (shared context + that thread's own trigger messages).
-  type ThreadGroup = { replyThreadTs: string | undefined; messages: NewMessage[] };
+  type ThreadGroup = {
+    replyThreadTs: string | undefined;
+    messages: NewMessage[];
+  };
   let threadGroups: ThreadGroup[];
 
   if (!isMainGroup && group.requiresTrigger !== false) {
@@ -246,18 +249,21 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       byThread.get(key)!.push(t);
     }
 
-    threadGroups = Array.from(byThread.entries()).map(([replyThreadTs, triggers]) => ({
-      replyThreadTs,
-      // Each invocation sees: non-trigger context + its own thread's triggers
-      messages: [...contextMessages, ...triggers].sort((a, b) =>
-        a.timestamp.localeCompare(b.timestamp),
-      ),
-    }));
+    threadGroups = Array.from(byThread.entries()).map(
+      ([replyThreadTs, triggers]) => ({
+        replyThreadTs,
+        // Each invocation sees: non-trigger context + its own thread's triggers
+        messages: [...contextMessages, ...triggers].sort((a, b) =>
+          a.timestamp.localeCompare(b.timestamp),
+        ),
+      }),
+    );
   } else {
     // Main group or requiresTrigger:false — single invocation, all messages
     threadGroups = [
       {
-        replyThreadTs: missedMessages[missedMessages.length - 1].reply_thread_ts,
+        replyThreadTs:
+          missedMessages[missedMessages.length - 1].reply_thread_ts,
         messages: missedMessages,
       },
     ];
@@ -271,7 +277,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length, threadCount: threadGroups.length },
+    {
+      group: group.name,
+      messageCount: missedMessages.length,
+      threadCount: threadGroups.length,
+    },
     'Processing messages',
   );
 
@@ -300,43 +310,54 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     let hadError = false;
     let outputSentToUser = false;
 
-    const output = await runAgent(group, prompt, chatJid, async (result) => {
-      // Streaming output callback — called for each agent result
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-        if (text) {
-          await channel.sendMessage(
-            chatJid,
-            text,
-            replyThreadTs ? { threadTs: replyThreadTs } : undefined,
+    const output = await runAgent(
+      group,
+      prompt,
+      chatJid,
+      async (result) => {
+        // Streaming output callback — called for each agent result
+        if (result.result) {
+          const raw =
+            typeof result.result === 'string'
+              ? result.result
+              : JSON.stringify(result.result);
+          // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+          const text = raw
+            .replace(/<internal>[\s\S]*?<\/internal>/g, '')
+            .trim();
+          logger.info(
+            { group: group.name },
+            `Agent output: ${raw.length} chars`,
           );
-          outputSentToUser = true;
-          anyOutputSent = true;
+          if (text) {
+            await channel.sendMessage(
+              chatJid,
+              text,
+              replyThreadTs ? { threadTs: replyThreadTs } : undefined,
+            );
+            outputSentToUser = true;
+            anyOutputSent = true;
+          }
+          // Only reset idle timer on actual results, not session-update markers (result: null)
+          resetIdleTimer();
         }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
-      }
 
-      if (result.status === 'success') {
-        // Only signal idle after the last thread group. Signalling idle between
-        // groups sets idleWaiting=true, which causes closeStdin to be called if
-        // a new message arrives while a subsequent container is still running —
-        // prematurely killing it before it can send its thread reply.
-        if (isLastThreadGroup) {
-          queue.notifyIdle(chatJid);
+        if (result.status === 'success') {
+          // Only signal idle after the last thread group. Signalling idle between
+          // groups sets idleWaiting=true, which causes closeStdin to be called if
+          // a new message arrives while a subsequent container is still running —
+          // prematurely killing it before it can send its thread reply.
+          if (isLastThreadGroup) {
+            queue.notifyIdle(chatJid);
+          }
         }
-      }
 
-      if (result.status === 'error') {
-        hadError = true;
-      }
-    }, replyThreadTs);
+        if (result.status === 'error') {
+          hadError = true;
+        }
+      },
+      replyThreadTs,
+    );
 
     await channel.setTyping?.(chatJid, false);
     if (idleTimer) clearTimeout(idleTimer);

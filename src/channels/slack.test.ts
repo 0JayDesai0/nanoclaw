@@ -371,7 +371,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ ts: '1704067200.000000', text: '<@U_BOT_123> hi' });
+      const event = createMessageEvent({
+        ts: '1704067200.000000',
+        text: '<@U_BOT_123> hi',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -387,7 +390,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ user: 'U_USER_456', text: '<@U_BOT_123> Hello' });
+      const event = createMessageEvent({
+        user: 'U_USER_456',
+        text: '<@U_BOT_123> Hello',
+      });
       await triggerMessageEvent(event);
 
       expect(currentApp().client.users.info).toHaveBeenCalledWith({
@@ -431,7 +437,10 @@ describe('SlackChannel', () => {
         new Error('API error'),
       );
 
-      const event = createMessageEvent({ user: 'U_UNKNOWN', text: '<@U_BOT_123> Hi' });
+      const event = createMessageEvent({
+        user: 'U_UNKNOWN',
+        text: '<@U_BOT_123> Hi',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(

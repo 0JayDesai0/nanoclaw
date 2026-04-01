@@ -236,9 +236,14 @@ async function buildContainerArgs(
   args.push('-e', `TZ=${TIMEZONE}`);
 
   // Pass GitHub token if configured, so the GitHub MCP server can authenticate
-  const { GITHUB_PERSONAL_ACCESS_TOKEN } = readEnvFile(['GITHUB_PERSONAL_ACCESS_TOKEN']);
+  const { GITHUB_PERSONAL_ACCESS_TOKEN } = readEnvFile([
+    'GITHUB_PERSONAL_ACCESS_TOKEN',
+  ]);
   if (GITHUB_PERSONAL_ACCESS_TOKEN) {
-    args.push('-e', `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}`);
+    args.push(
+      '-e',
+      `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}`,
+    );
   }
 
   // Pass Snowflake credentials if configured, so the Snowflake MCP server can authenticate
@@ -250,7 +255,15 @@ async function buildContainerArgs(
     SNOWFLAKE_ROLE,
     SNOWFLAKE_DATABASE,
     SNOWFLAKE_SCHEMA,
-  } = readEnvFile(['SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USERNAME', 'SNOWFLAKE_PASSWORD', 'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE', 'SNOWFLAKE_SCHEMA']);
+  } = readEnvFile([
+    'SNOWFLAKE_ACCOUNT',
+    'SNOWFLAKE_USERNAME',
+    'SNOWFLAKE_PASSWORD',
+    'SNOWFLAKE_WAREHOUSE',
+    'SNOWFLAKE_ROLE',
+    'SNOWFLAKE_DATABASE',
+    'SNOWFLAKE_SCHEMA',
+  ]);
   if (SNOWFLAKE_PASSWORD) {
     args.push('-e', `SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}`);
     args.push('-e', `SNOWFLAKE_USERNAME=${SNOWFLAKE_USERNAME}`);
