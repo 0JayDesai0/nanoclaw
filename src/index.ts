@@ -214,96 +214,157 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   if (missedMessages.length === 0) return true;
 
-  // For non-main groups, check if trigger is required and present
+  // Build thread groups — one agent invocation per distinct reply_thread_ts.
+  // When multiple @mentions arrive from different threads in the same polling
+  // window, each thread gets its own invocation so responses are routed back
+  // to the correct thread rather than all going to the last trigger's thread.
+  //
+  // Structure: each group carries the thread's reply target and the messages
+  // to send (shared context + that thread's own trigger messages).
+  type ThreadGroup = { replyThreadTs: string | undefined; messages: NewMessage[] };
+  let threadGroups: ThreadGroup[];
+
   if (!isMainGroup && group.requiresTrigger !== false) {
     const triggerPattern = getTriggerPattern(group.trigger);
     const allowlistCfg = loadSenderAllowlist();
-    const hasTrigger = missedMessages.some(
+    const triggerMessages = missedMessages.filter(
       (m) =>
         triggerPattern.test(m.content.trim()) &&
         (m.is_from_me || isTriggerAllowed(chatJid, m.sender, allowlistCfg)),
     );
-    if (!hasTrigger) return true;
+    if (triggerMessages.length === 0) return true;
+
+    // Group triggers by thread. Channels without threading (WhatsApp, Telegram)
+    // will have reply_thread_ts = undefined for all triggers, producing a single
+    // group — identical to the previous single-invocation behaviour.
+    const triggerSet = new Set(triggerMessages);
+    const contextMessages = missedMessages.filter((m) => !triggerSet.has(m));
+    const byThread = new Map<string | undefined, NewMessage[]>();
+    for (const t of triggerMessages) {
+      const key = t.reply_thread_ts;
+      if (!byThread.has(key)) byThread.set(key, []);
+      byThread.get(key)!.push(t);
+    }
+
+    threadGroups = Array.from(byThread.entries()).map(([replyThreadTs, triggers]) => ({
+      replyThreadTs,
+      // Each invocation sees: non-trigger context + its own thread's triggers
+      messages: [...contextMessages, ...triggers].sort((a, b) =>
+        a.timestamp.localeCompare(b.timestamp),
+      ),
+    }));
+  } else {
+    // Main group or requiresTrigger:false — single invocation, all messages
+    threadGroups = [
+      {
+        replyThreadTs: missedMessages[missedMessages.length - 1].reply_thread_ts,
+        messages: missedMessages,
+      },
+    ];
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
-
-  // Advance cursor so the piping path in startMessageLoop won't re-fetch
-  // these messages. Save the old cursor so we can roll back on error.
+  // Advance cursor once for all thread groups before any invocations start.
+  // Save the old cursor so we can roll back if everything fails.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
   lastAgentTimestamp[chatJid] =
     missedMessages[missedMessages.length - 1].timestamp;
   saveState();
 
   logger.info(
-    { group: group.name, messageCount: missedMessages.length },
+    { group: group.name, messageCount: missedMessages.length, threadCount: threadGroups.length },
     'Processing messages',
   );
 
-  // Track idle timer for closing stdin when agent is idle
-  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let anyOutputSent = false;
+  let anySuccess = false;
 
-  const resetIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer);
-    idleTimer = setTimeout(() => {
-      logger.debug(
-        { group: group.name },
-        'Idle timeout, closing container stdin',
-      );
-      queue.closeStdin(chatJid);
-    }, IDLE_TIMEOUT);
-  };
+  for (let tIdx = 0; tIdx < threadGroups.length; tIdx++) {
+    const { replyThreadTs, messages } = threadGroups[tIdx];
+    const isLastThreadGroup = tIdx === threadGroups.length - 1;
+    const prompt = formatMessages(messages, TIMEZONE);
 
-  await channel.setTyping?.(chatJid, true);
-  let hadError = false;
-  let outputSentToUser = false;
+    // Track idle timer for closing stdin when agent is idle
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const resetIdleTimer = () => {
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => {
+        logger.debug(
+          { group: group.name },
+          'Idle timeout, closing container stdin',
+        );
+        queue.closeStdin(chatJid);
+      }, IDLE_TIMEOUT);
+    };
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
-    // Streaming output callback — called for each agent result
-    if (result.result) {
-      const raw =
-        typeof result.result === 'string'
-          ? result.result
-          : JSON.stringify(result.result);
-      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-      logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
-      if (text) {
-        await channel.sendMessage(chatJid, text);
-        outputSentToUser = true;
+    await channel.setTyping?.(chatJid, true);
+    let hadError = false;
+    let outputSentToUser = false;
+
+    const output = await runAgent(group, prompt, chatJid, async (result) => {
+      // Streaming output callback — called for each agent result
+      if (result.result) {
+        const raw =
+          typeof result.result === 'string'
+            ? result.result
+            : JSON.stringify(result.result);
+        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+        logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
+        if (text) {
+          await channel.sendMessage(
+            chatJid,
+            text,
+            replyThreadTs ? { threadTs: replyThreadTs } : undefined,
+          );
+          outputSentToUser = true;
+          anyOutputSent = true;
+        }
+        // Only reset idle timer on actual results, not session-update markers (result: null)
+        resetIdleTimer();
       }
-      // Only reset idle timer on actual results, not session-update markers (result: null)
-      resetIdleTimer();
-    }
 
-    if (result.status === 'success') {
-      queue.notifyIdle(chatJid);
-    }
+      if (result.status === 'success') {
+        // Only signal idle after the last thread group. Signalling idle between
+        // groups sets idleWaiting=true, which causes closeStdin to be called if
+        // a new message arrives while a subsequent container is still running —
+        // prematurely killing it before it can send its thread reply.
+        if (isLastThreadGroup) {
+          queue.notifyIdle(chatJid);
+        }
+      }
 
-    if (result.status === 'error') {
-      hadError = true;
-    }
-  });
+      if (result.status === 'error') {
+        hadError = true;
+      }
+    }, replyThreadTs);
 
-  await channel.setTyping?.(chatJid, false);
-  if (idleTimer) clearTimeout(idleTimer);
+    await channel.setTyping?.(chatJid, false);
+    if (idleTimer) clearTimeout(idleTimer);
 
-  if (output === 'error' || hadError) {
-    // If we already sent output to the user, don't roll back the cursor —
-    // the user got their response and re-processing would send duplicates.
-    if (outputSentToUser) {
+    if (output !== 'error' && !hadError) {
+      anySuccess = true;
+    } else if (!outputSentToUser) {
+      logger.warn(
+        { group: group.name, replyThreadTs },
+        'Agent error for thread group',
+      );
+    } else {
+      // Error after partial output — don't retry this thread to avoid duplicates
+      anySuccess = true;
       logger.warn(
         { group: group.name },
         'Agent error after output was sent, skipping cursor rollback to prevent duplicates',
       );
-      return true;
     }
-    // Roll back cursor so retries can re-process these messages
+  }
+
+  if (!anySuccess && !anyOutputSent) {
+    // Every thread group failed with no output — roll back so all messages retry
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     logger.warn(
       { group: group.name },
-      'Agent error, rolled back message cursor for retry',
+      'All thread groups failed, rolled back message cursor for retry',
     );
     return false;
   }
@@ -316,6 +377,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  replyThreadTs?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -367,6 +429,7 @@ async function runAgent(
         chatJid,
         isMain,
         assistantName: ASSISTANT_NAME,
+        replyThreadTs,
       },
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
@@ -466,9 +529,22 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
+
+          // Never pipe threaded messages (those with reply_thread_ts) to a
+          // running container. The pipe path reuses the container's original
+          // thread context, so a message from a different thread would get the
+          // wrong reply_thread_ts regardless of how many threads are pending.
+          // Threaded mentions are separate conversations — always route through
+          // processGroupMessages which handles per-thread grouping.
+          // Non-threaded channels (WhatsApp, Telegram) have no reply_thread_ts
+          // so the pipe optimisation is preserved for them.
+          const hasThreadedMessages = messagesToSend.some(
+            (m) => m.reply_thread_ts,
+          );
+
           const formatted = formatMessages(messagesToSend, TIMEZONE);
 
-          if (queue.sendMessage(chatJid, formatted)) {
+          if (!hasThreadedMessages && queue.sendMessage(chatJid, formatted)) {
             logger.debug(
               { chatJid, count: messagesToSend.length },
               'Piped messages to active container',
@@ -483,7 +559,8 @@ async function startMessageLoop(): Promise<void> {
                 logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
               );
           } else {
-            // No active container — enqueue for a new one
+            // No active container, or messages span multiple threads —
+            // enqueue for processGroupMessages which handles thread grouping.
             queue.enqueueMessageCheck(chatJid);
           }
         }
@@ -663,10 +740,10 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: (jid, text, opts) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return channel.sendMessage(jid, text, opts);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

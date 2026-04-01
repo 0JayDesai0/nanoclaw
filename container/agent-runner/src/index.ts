@@ -29,6 +29,7 @@ interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  replyThreadTs?: string;
 }
 
 interface ContainerOutput {
@@ -409,7 +410,9 @@ async function runQuery(
         'TeamCreate', 'TeamDelete', 'SendMessage',
         'TodoWrite', 'ToolSearch', 'Skill',
         'NotebookEdit',
-        'mcp__nanoclaw__*'
+        'mcp__nanoclaw__*',
+        'mcp__github__*',
+        'mcp__snowflake__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -423,8 +426,32 @@ async function runQuery(
             NANOCLAW_CHAT_JID: containerInput.chatJid,
             NANOCLAW_GROUP_FOLDER: containerInput.groupFolder,
             NANOCLAW_IS_MAIN: containerInput.isMain ? '1' : '0',
+            NANOCLAW_REPLY_THREAD_TS: containerInput.replyThreadTs || '',
           },
         },
+        ...(process.env.GITHUB_PERSONAL_ACCESS_TOKEN ? {
+          github: {
+            command: 'node',
+            args: ['/app/node_modules/@modelcontextprotocol/server-github/dist/index.js'],
+            env: {
+              GITHUB_PERSONAL_ACCESS_TOKEN: process.env.GITHUB_PERSONAL_ACCESS_TOKEN,
+            },
+          },
+        } : {}),
+        ...(process.env.SNOWFLAKE_PASSWORD ? {
+          snowflake: {
+            command: '/opt/snowflake-mcp/bin/mcp_snowflake_server',
+            args: [
+              '--account', process.env.SNOWFLAKE_ACCOUNT || '',
+              '--user', process.env.SNOWFLAKE_USERNAME || '',
+              '--password', process.env.SNOWFLAKE_PASSWORD,
+              '--warehouse', process.env.SNOWFLAKE_WAREHOUSE || '',
+              '--role', process.env.SNOWFLAKE_ROLE || '',
+              '--database', process.env.SNOWFLAKE_DATABASE || '',
+              '--schema', process.env.SNOWFLAKE_SCHEMA || '',
+            ],
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],

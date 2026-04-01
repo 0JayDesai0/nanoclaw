@@ -132,7 +132,9 @@ function currentApp() {
   return appRef.current;
 }
 
-async function triggerMessageEvent(event: ReturnType<typeof createMessageEvent>) {
+async function triggerMessageEvent(
+  event: ReturnType<typeof createMessageEvent>,
+) {
   const handler = currentApp().eventHandlers.get('message');
   if (handler) await handler({ event });
 }
@@ -198,12 +200,12 @@ describe('SlackChannel', () => {
   // --- Message handling ---
 
   describe('message handling', () => {
-    it('delivers message for registered channel', async () => {
+    it('delivers message for registered channel when bot is @mentioned', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ text: 'Hello everyone' });
+      const event = createMessageEvent({ text: '<@U_BOT_123> Hello everyone' });
       await triggerMessageEvent(event);
 
       expect(opts.onChatMetadata).toHaveBeenCalledWith(
@@ -219,10 +221,21 @@ describe('SlackChannel', () => {
           id: '1704067200.000000',
           chat_jid: 'slack:C0123456789',
           sender: 'U_USER_456',
-          content: 'Hello everyone',
           is_from_me: false,
         }),
       );
+    });
+
+    it('does not deliver message for registered channel without @mention', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = createMessageEvent({ text: 'Hello everyone' });
+      await triggerMessageEvent(event);
+
+      expect(opts.onChatMetadata).toHaveBeenCalled();
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
 
     it('only emits metadata for unregistered channels', async () => {
@@ -309,7 +322,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ user: 'U_BOT_123', text: 'Self message' });
+      const event = createMessageEvent({
+        user: 'U_BOT_123',
+        text: 'Self message',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -355,7 +371,7 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ ts: '1704067200.000000' });
+      const event = createMessageEvent({ ts: '1704067200.000000', text: '<@U_BOT_123> hi' });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -371,7 +387,7 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ user: 'U_USER_456', text: 'Hello' });
+      const event = createMessageEvent({ user: 'U_USER_456', text: '<@U_BOT_123> Hello' });
       await triggerMessageEvent(event);
 
       expect(currentApp().client.users.info).toHaveBeenCalledWith({
@@ -391,13 +407,17 @@ describe('SlackChannel', () => {
       await channel.connect();
 
       // First message — API call
-      await triggerMessageEvent(createMessageEvent({ user: 'U_USER_456', text: 'First' }));
+      await triggerMessageEvent(
+        createMessageEvent({ user: 'U_USER_456', text: '<@U_BOT_123> First' }),
+      );
       // Second message — should use cache
-      await triggerMessageEvent(createMessageEvent({
-        user: 'U_USER_456',
-        text: 'Second',
-        ts: '1704067201.000000',
-      }));
+      await triggerMessageEvent(
+        createMessageEvent({
+          user: 'U_USER_456',
+          text: '<@U_BOT_123> Second',
+          ts: '1704067201.000000',
+        }),
+      );
 
       expect(currentApp().client.users.info).toHaveBeenCalledTimes(1);
     });
@@ -407,9 +427,11 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      currentApp().client.users.info.mockRejectedValueOnce(new Error('API error'));
+      currentApp().client.users.info.mockRejectedValueOnce(
+        new Error('API error'),
+      );
 
-      const event = createMessageEvent({ user: 'U_UNKNOWN', text: 'Hi' });
+      const event = createMessageEvent({ user: 'U_UNKNOWN', text: '<@U_BOT_123> Hi' });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -420,48 +442,71 @@ describe('SlackChannel', () => {
       );
     });
 
-    it('flattens threaded replies into channel messages', async () => {
+    it('delivers threaded @mention replies with reply_thread_ts set to thread root', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
+      const threadRootTs = '1704067200.000000';
       const event = createMessageEvent({
         ts: '1704067201.000000',
-        threadTs: '1704067200.000000', // parent message ts — this is a reply
-        text: 'Thread reply',
+        threadTs: threadRootTs,
+        text: '<@U_BOT_123> Thread reply',
       });
       await triggerMessageEvent(event);
 
-      // Threaded replies are delivered as regular channel messages
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
-          content: 'Thread reply',
+          content: expect.stringContaining('Thread reply'),
+          reply_thread_ts: threadRootTs,
         }),
       );
     });
 
-    it('delivers thread parent messages normally', async () => {
+    it('sets reply_thread_ts to message ts for top-level @mentions (starts new thread)', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const messageTs = '1704067200.000000';
+      const event = createMessageEvent({
+        ts: messageTs,
+        // no threadTs — top-level message
+        text: '<@U_BOT_123> Top-level mention',
+      });
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          reply_thread_ts: messageTs,
+        }),
+      );
+    });
+
+    it('does not set reply_thread_ts on bot messages', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
       const event = createMessageEvent({
-        ts: '1704067200.000000',
-        threadTs: '1704067200.000000', // same as ts — this IS the parent
-        text: 'Thread parent',
+        subtype: 'bot_message',
+        botId: 'B_MY_BOT',
+        text: 'Bot response',
+        threadTs: '1704067200.000000',
       });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
-          content: 'Thread parent',
+          reply_thread_ts: undefined,
         }),
       );
     });
 
-    it('delivers messages without thread_ts normally', async () => {
+    it('does not deliver messages without @mention', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -469,7 +514,7 @@ describe('SlackChannel', () => {
       const event = createMessageEvent({ text: 'Normal message' });
       await triggerMessageEvent(event);
 
-      expect(opts.onMessage).toHaveBeenCalled();
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -536,7 +581,7 @@ describe('SlackChannel', () => {
       );
     });
 
-    it('does not translate mentions for other users', async () => {
+    it('does not deliver messages mentioning other users (not the bot)', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -547,13 +592,8 @@ describe('SlackChannel', () => {
       });
       await triggerMessageEvent(event);
 
-      // Mention is for a different user, not the bot
-      expect(opts.onMessage).toHaveBeenCalledWith(
-        'slack:C0123456789',
-        expect.objectContaining({
-          content: 'Hey <@U_OTHER_USER> look at this',
-        }),
-      );
+      // Mention is for a different user, not the bot — should be filtered out
+      expect(opts.onMessage).not.toHaveBeenCalled();
     });
   });
 
@@ -812,17 +852,13 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
 
       // First page returns a cursor; second page returns no cursor
-      currentApp().client.conversations.list
-        .mockResolvedValueOnce({
-          channels: [
-            { id: 'C001', name: 'general', is_member: true },
-          ],
+      currentApp()
+        .client.conversations.list.mockResolvedValueOnce({
+          channels: [{ id: 'C001', name: 'general', is_member: true }],
           response_metadata: { next_cursor: 'cursor_page2' },
         })
         .mockResolvedValueOnce({
-          channels: [
-            { id: 'C002', name: 'random', is_member: true },
-          ],
+          channels: [{ id: 'C002', name: 'random', is_member: true }],
           response_metadata: {},
         });
 
@@ -830,7 +866,8 @@ describe('SlackChannel', () => {
 
       // Should have called conversations.list twice (once per page)
       expect(currentApp().client.conversations.list).toHaveBeenCalledTimes(2);
-      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(2,
+      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(
+        2,
         expect.objectContaining({ cursor: 'cursor_page2' }),
       );
 

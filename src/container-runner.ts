@@ -26,6 +26,7 @@ import {
 } from './container-runtime.js';
 import { OneCLI } from '@onecli-sh/sdk';
 import { validateAdditionalMounts } from './mount-security.js';
+import { readEnvFile } from './env.js';
 import { RegisteredGroup } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL });
@@ -43,6 +44,7 @@ export interface ContainerInput {
   isScheduledTask?: boolean;
   assistantName?: string;
   script?: string;
+  replyThreadTs?: string;
 }
 
 export interface ContainerOutput {
@@ -232,6 +234,32 @@ async function buildContainerArgs(
 
   // Pass host timezone so container's local time matches the user's
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Pass GitHub token if configured, so the GitHub MCP server can authenticate
+  const { GITHUB_PERSONAL_ACCESS_TOKEN } = readEnvFile(['GITHUB_PERSONAL_ACCESS_TOKEN']);
+  if (GITHUB_PERSONAL_ACCESS_TOKEN) {
+    args.push('-e', `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}`);
+  }
+
+  // Pass Snowflake credentials if configured, so the Snowflake MCP server can authenticate
+  const {
+    SNOWFLAKE_ACCOUNT,
+    SNOWFLAKE_USERNAME,
+    SNOWFLAKE_PASSWORD,
+    SNOWFLAKE_WAREHOUSE,
+    SNOWFLAKE_ROLE,
+    SNOWFLAKE_DATABASE,
+    SNOWFLAKE_SCHEMA,
+  } = readEnvFile(['SNOWFLAKE_ACCOUNT', 'SNOWFLAKE_USERNAME', 'SNOWFLAKE_PASSWORD', 'SNOWFLAKE_WAREHOUSE', 'SNOWFLAKE_ROLE', 'SNOWFLAKE_DATABASE', 'SNOWFLAKE_SCHEMA']);
+  if (SNOWFLAKE_PASSWORD) {
+    args.push('-e', `SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}`);
+    args.push('-e', `SNOWFLAKE_USERNAME=${SNOWFLAKE_USERNAME}`);
+    args.push('-e', `SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}`);
+    args.push('-e', `SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}`);
+    args.push('-e', `SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE}`);
+    args.push('-e', `SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}`);
+    args.push('-e', `SNOWFLAKE_SCHEMA=${SNOWFLAKE_SCHEMA}`);
+  }
 
   // OneCLI gateway handles credential injection — containers never see real secrets.
   // The gateway intercepts HTTPS traffic and injects API keys or OAuth tokens.

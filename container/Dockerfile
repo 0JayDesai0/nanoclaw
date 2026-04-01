@@ -24,7 +24,21 @@ RUN apt-get update && apt-get install -y \
     libxshmfence1 \
     curl \
     git \
+    python3 \
+    python3-dev \
+    python3-venv \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Install uv (provides uvx for running Python MCP servers like mcp-snowflake-server)
+RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin sh
+
+# Pre-install Snowflake MCP server into a dedicated venv using native Python venv + pip.
+# Uses python3 -m venv (not uv venv) so pkg_resources is available via setuptools.
+# pyopenssl 22.x is incompatible with cryptography 42+; pin to 24+ to fix cffi mismatch.
+RUN python3 -m venv /opt/snowflake-mcp && \
+    /opt/snowflake-mcp/bin/pip install --no-cache-dir "mcp-snowflake-server" "pyopenssl>=24.0.0" && \
+    chmod -R a+rx /opt/snowflake-mcp
 
 # Set Chromium path for agent-browser
 ENV AGENT_BROWSER_EXECUTABLE_PATH=/usr/bin/chromium

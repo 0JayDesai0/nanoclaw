@@ -51,6 +51,14 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  // Thread to reply into. Set by channels that support threading (e.g. Slack).
+  // The value is the platform thread identifier (Slack thread_ts).
+  reply_thread_ts?: string;
+}
+
+// Options for sending an outbound message
+export interface MessageSendOpts {
+  threadTs?: string;
 }
 
 export interface ScheduledTask {
@@ -83,7 +91,7 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, opts?: MessageSendOpts): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
