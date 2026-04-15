@@ -54,6 +54,10 @@ export interface NewMessage {
   // Thread to reply into. Set by channels that support threading (e.g. Slack).
   // The value is the platform thread identifier (Slack thread_ts).
   reply_thread_ts?: string;
+  thread_id?: string;
+  reply_to_message_id?: string;
+  reply_to_message_content?: string;
+  reply_to_sender_name?: string;
 }
 
 // Options for sending an outbound message
