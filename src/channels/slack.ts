@@ -44,13 +44,14 @@ export class SlackChannel implements Channel {
   private userNameCache = new Map<string, string>();
 
   private opts: SlackChannelOpts;
+  private trustedBotIds: string[] = [];
 
   constructor(opts: SlackChannelOpts) {
     this.opts = opts;
 
     // Read tokens from .env (not process.env — keeps secrets off the environment
     // so they don't leak to child processes, matching NanoClaw's security pattern)
-    const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
+    const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_TRUSTED_BOT_IDS']);
     const botToken = env.SLACK_BOT_TOKEN;
     const appToken = env.SLACK_APP_TOKEN;
 
@@ -59,6 +60,10 @@ export class SlackChannel implements Channel {
         'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set in .env',
       );
     }
+
+    this.trustedBotIds = env.SLACK_TRUSTED_BOT_IDS
+      ? env.SLACK_TRUSTED_BOT_IDS.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
 
     this.app = new App({
       token: botToken,
@@ -101,23 +106,21 @@ export class SlackChannel implements Channel {
       if (!groups[jid]) return;
 
       const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
+      const msgBotId = (msg as { bot_id?: string }).bot_id;
+      const isTrustedBot =
+        isBotMessage &&
+        msg.user !== this.botUserId &&
+        !!msgBotId &&
+        this.trustedBotIds.includes(msgBotId);
 
       let senderName: string;
-      if (isBotMessage) {
-        senderName = ASSISTANT_NAME;
-      } else {
-        senderName =
-          (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
-          msg.user ||
-          'unknown';
-      }
-
-      // For user messages, only process real Slack @mentions (<@BOTID>).
-      // Plain text containing the bot name does not trigger a response.
-      // Bot messages are always passed through for context tracking.
       let content = msg.text;
       let replyThreadTs: string | undefined;
+      let effectiveIsBotMessage: boolean;
+
       if (!isBotMessage) {
+        // Regular user message — only process real Slack @mentions (<@BOTID>).
+        // Plain text containing the bot name does not trigger a response.
         const mentionPattern = this.botUserId ? `<@${this.botUserId}>` : null;
         if (!mentionPattern || !content.includes(mentionPattern)) {
           return;
@@ -130,17 +133,34 @@ export class SlackChannel implements Channel {
         // This travels with the message through the pipeline so the correct thread
         // is targeted even when multiple mentions are in-flight simultaneously.
         replyThreadTs = (msg as { thread_ts?: string }).thread_ts || msg.ts;
+        senderName =
+          (msg.user ? await this.resolveUserName(msg.user) : undefined) ||
+          msg.user ||
+          'unknown';
+        effectiveIsBotMessage = false;
+      } else if (isTrustedBot) {
+        // Trusted workflow bot — trigger without @mention, always reply in thread.
+        if (!TRIGGER_PATTERN.test(content)) {
+          content = `@${ASSISTANT_NAME} ${content}`;
+        }
+        replyThreadTs = (msg as { thread_ts?: string }).thread_ts || msg.ts;
+        senderName = (await this.resolveBotName(msgBotId)) || msgBotId;
+        effectiveIsBotMessage = false;
+      } else {
+        // Own bot message or untrusted bot — pass through for context tracking only.
+        senderName = ASSISTANT_NAME;
+        effectiveIsBotMessage = true;
       }
 
       this.opts.onMessage(jid, {
         id: msg.ts,
         chat_jid: jid,
-        sender: msg.user || msg.bot_id || '',
+        sender: msg.user || msgBotId || '',
         sender_name: senderName,
         content,
         timestamp,
-        is_from_me: isBotMessage,
-        is_bot_message: isBotMessage,
+        is_from_me: effectiveIsBotMessage,
+        is_bot_message: effectiveIsBotMessage,
         reply_thread_ts: replyThreadTs,
       });
     });
@@ -280,6 +300,16 @@ export class SlackChannel implements Channel {
       return name;
     } catch (err) {
       logger.debug({ userId, err }, 'Failed to resolve Slack user name');
+      return undefined;
+    }
+  }
+
+  private async resolveBotName(botId: string): Promise<string | undefined> {
+    try {
+      const result = await this.app.client.bots.info({ bot: botId });
+      return result.bot?.name;
+    } catch (err) {
+      logger.debug({ botId, err }, 'Failed to resolve Slack bot name');
       return undefined;
     }
   }
