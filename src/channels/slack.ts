@@ -51,7 +51,11 @@ export class SlackChannel implements Channel {
 
     // Read tokens from .env (not process.env — keeps secrets off the environment
     // so they don't leak to child processes, matching NanoClaw's security pattern)
-    const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_TRUSTED_BOT_IDS']);
+    const env = readEnvFile([
+      'SLACK_BOT_TOKEN',
+      'SLACK_APP_TOKEN',
+      'SLACK_TRUSTED_BOT_IDS',
+    ]);
     const botToken = env.SLACK_BOT_TOKEN;
     const appToken = env.SLACK_APP_TOKEN;
 
@@ -62,7 +66,9 @@ export class SlackChannel implements Channel {
     }
 
     this.trustedBotIds = env.SLACK_TRUSTED_BOT_IDS
-      ? env.SLACK_TRUSTED_BOT_IDS.split(',').map((s) => s.trim()).filter(Boolean)
+      ? env.SLACK_TRUSTED_BOT_IDS.split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [];
 
     this.app = new App({
