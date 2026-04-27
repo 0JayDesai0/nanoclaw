@@ -294,7 +294,10 @@ async function buildContainerArgs(
       args.push('-e', `SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}`);
     }
     if (SNOWFLAKE_PRIVATE_KEY_PATH) {
-      args.push('-e', `SNOWFLAKE_PRIVATE_KEY_PATH=${SNOWFLAKE_PRIVATE_KEY_PATH}`);
+      args.push(
+        '-e',
+        `SNOWFLAKE_PRIVATE_KEY_PATH=${SNOWFLAKE_PRIVATE_KEY_PATH}`,
+      );
     }
     args.push('-e', `SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}`);
     args.push('-e', `SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE}`);
