@@ -266,11 +266,13 @@ async function buildContainerArgs(
     );
   }
 
-  // Pass Snowflake credentials if configured, so the Snowflake MCP server can authenticate
+  // Pass Snowflake credentials if configured, so the Snowflake MCP server can authenticate.
+  // Supports either password auth or key-pair auth (mutually inclusive — either gate opens forwarding).
   const {
     SNOWFLAKE_ACCOUNT,
     SNOWFLAKE_USERNAME,
     SNOWFLAKE_PASSWORD,
+    SNOWFLAKE_PRIVATE_KEY_PATH,
     SNOWFLAKE_WAREHOUSE,
     SNOWFLAKE_ROLE,
     SNOWFLAKE_DATABASE,
@@ -279,15 +281,21 @@ async function buildContainerArgs(
     'SNOWFLAKE_ACCOUNT',
     'SNOWFLAKE_USERNAME',
     'SNOWFLAKE_PASSWORD',
+    'SNOWFLAKE_PRIVATE_KEY_PATH',
     'SNOWFLAKE_WAREHOUSE',
     'SNOWFLAKE_ROLE',
     'SNOWFLAKE_DATABASE',
     'SNOWFLAKE_SCHEMA',
   ]);
-  if (SNOWFLAKE_PASSWORD) {
+  if (SNOWFLAKE_PASSWORD || SNOWFLAKE_PRIVATE_KEY_PATH) {
     args.push('-e', `SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ACCOUNT}`);
     args.push('-e', `SNOWFLAKE_USERNAME=${SNOWFLAKE_USERNAME}`);
-    args.push('-e', `SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}`);
+    if (SNOWFLAKE_PASSWORD) {
+      args.push('-e', `SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}`);
+    }
+    if (SNOWFLAKE_PRIVATE_KEY_PATH) {
+      args.push('-e', `SNOWFLAKE_PRIVATE_KEY_PATH=${SNOWFLAKE_PRIVATE_KEY_PATH}`);
+    }
     args.push('-e', `SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}`);
     args.push('-e', `SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE}`);
     args.push('-e', `SNOWFLAKE_DATABASE=${SNOWFLAKE_DATABASE}`);

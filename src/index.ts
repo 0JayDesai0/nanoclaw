@@ -70,7 +70,7 @@ import { logger } from './logger.js';
 export { escapeXml, formatMessages } from './router.js';
 
 let lastTimestamp = '';
-let sessions: Record<string, string> = {};
+let sessions: Record<string, Record<string, string>> = {};
 let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
@@ -426,7 +426,8 @@ async function runAgent(
   replyThreadTs?: string,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  const threadKey = replyThreadTs || '';
+  const sessionId = sessions[group.folder]?.[threadKey];
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();
@@ -458,8 +459,9 @@ async function runAgent(
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
-          sessions[group.folder] = output.newSessionId;
-          setSession(group.folder, output.newSessionId);
+          if (!sessions[group.folder]) sessions[group.folder] = {};
+          sessions[group.folder][threadKey] = output.newSessionId;
+          setSession(group.folder, threadKey, output.newSessionId);
         }
         await onOutput(output);
       }
@@ -483,8 +485,9 @@ async function runAgent(
     );
 
     if (output.newSessionId) {
-      sessions[group.folder] = output.newSessionId;
-      setSession(group.folder, output.newSessionId);
+      if (!sessions[group.folder]) sessions[group.folder] = {};
+      sessions[group.folder][threadKey] = output.newSessionId;
+      setSession(group.folder, threadKey, output.newSessionId);
     }
 
     if (output.status === 'error') {
@@ -504,8 +507,10 @@ async function runAgent(
           { group: group.name, staleSessionId: sessionId, error: output.error },
           'Stale session detected — clearing for next retry',
         );
-        delete sessions[group.folder];
-        deleteSession(group.folder);
+        if (sessions[group.folder]) {
+          delete sessions[group.folder][threadKey];
+        }
+        deleteSession(group.folder, threadKey);
       }
 
       logger.error(

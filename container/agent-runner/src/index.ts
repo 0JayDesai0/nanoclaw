@@ -497,13 +497,18 @@ async function runQuery(
             },
           },
         } : {}),
-        ...(process.env.SNOWFLAKE_PASSWORD ? {
+        ...(process.env.SNOWFLAKE_PASSWORD || process.env.SNOWFLAKE_PRIVATE_KEY_PATH ? {
           snowflake: {
             command: '/opt/snowflake-mcp/bin/mcp_snowflake_server',
+            // The MCP server reads SNOWFLAKE_PRIVATE_KEY_PATH directly from env
+            // for key-pair auth, so no extra CLI flag is needed for that case.
+            // We only pass --password when password auth is configured.
             args: [
               '--account', process.env.SNOWFLAKE_ACCOUNT || '',
               '--user', process.env.SNOWFLAKE_USERNAME || '',
-              '--password', process.env.SNOWFLAKE_PASSWORD,
+              ...(process.env.SNOWFLAKE_PASSWORD
+                ? ['--password', process.env.SNOWFLAKE_PASSWORD]
+                : []),
               '--warehouse', process.env.SNOWFLAKE_WAREHOUSE || '',
               '--role', process.env.SNOWFLAKE_ROLE || '',
               '--database', process.env.SNOWFLAKE_DATABASE || '',

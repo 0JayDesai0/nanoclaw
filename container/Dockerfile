@@ -37,7 +37,9 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | UV_INSTALL_DIR=/usr/local/bin s
 # Uses python3 -m venv (not uv venv) so pkg_resources is available via setuptools.
 # pyopenssl 22.x is incompatible with cryptography 42+; pin to 24+ to fix cffi mismatch.
 RUN python3 -m venv /opt/snowflake-mcp && \
-    /opt/snowflake-mcp/bin/pip install --no-cache-dir "mcp-snowflake-server" "pyopenssl>=24.0.0" && \
+    /opt/snowflake-mcp/bin/pip install --no-cache-dir \
+        "git+https://github.com/isaacwasserman/mcp-snowflake-server.git@9d6d93c0110d4e91baa8eaa7302de9927feb3036" \
+        "pyopenssl>=24.0.0" && \
     chmod -R a+rx /opt/snowflake-mcp
 
 # Set Chromium path for agent-browser

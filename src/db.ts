@@ -70,8 +70,10 @@ function createSchema(database: Database.Database): void {
       value TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS sessions (
-      group_folder TEXT PRIMARY KEY,
-      session_id TEXT NOT NULL
+      group_folder TEXT NOT NULL,
+      thread_ts TEXT NOT NULL DEFAULT '',
+      session_id TEXT NOT NULL,
+      PRIMARY KEY (group_folder, thread_ts)
     );
     CREATE TABLE IF NOT EXISTS registered_groups (
       jid TEXT PRIMARY KEY,
@@ -163,6 +165,32 @@ function createSchema(database: Database.Database): void {
     database.exec(`ALTER TABLE messages ADD COLUMN reply_to_sender_name TEXT`);
   } catch {
     /* columns already exist */
+  }
+
+  // Migrate sessions table to per-thread keying. Old schema was
+  // (group_folder PRIMARY KEY, session_id). New schema adds thread_ts and
+  // makes the PK composite so each Slack thread can hold its own session.
+  // SQLite can't alter a PK in place, so we rebuild the table.
+  try {
+    const cols = database.pragma('table_info(sessions)') as Array<{
+      name: string;
+    }>;
+    if (!cols.some((c) => c.name === 'thread_ts')) {
+      database.exec(`
+        CREATE TABLE sessions_new (
+          group_folder TEXT NOT NULL,
+          thread_ts TEXT NOT NULL DEFAULT '',
+          session_id TEXT NOT NULL,
+          PRIMARY KEY (group_folder, thread_ts)
+        );
+        INSERT INTO sessions_new (group_folder, thread_ts, session_id)
+          SELECT group_folder, '', session_id FROM sessions;
+        DROP TABLE sessions;
+        ALTER TABLE sessions_new RENAME TO sessions;
+      `);
+    }
+  } catch {
+    /* already migrated or table missing */
   }
 }
 
@@ -572,30 +600,49 @@ export function setRouterState(key: string, value: string): void {
 
 // --- Session accessors ---
 
-export function getSession(groupFolder: string): string | undefined {
+export function getSession(
+  groupFolder: string,
+  threadTs: string = '',
+): string | undefined {
   const row = db
-    .prepare('SELECT session_id FROM sessions WHERE group_folder = ?')
-    .get(groupFolder) as { session_id: string } | undefined;
+    .prepare(
+      'SELECT session_id FROM sessions WHERE group_folder = ? AND thread_ts = ?',
+    )
+    .get(groupFolder, threadTs) as { session_id: string } | undefined;
   return row?.session_id;
 }
 
-export function setSession(groupFolder: string, sessionId: string): void {
+export function setSession(
+  groupFolder: string,
+  threadTs: string,
+  sessionId: string,
+): void {
   db.prepare(
-    'INSERT OR REPLACE INTO sessions (group_folder, session_id) VALUES (?, ?)',
-  ).run(groupFolder, sessionId);
+    'INSERT OR REPLACE INTO sessions (group_folder, thread_ts, session_id) VALUES (?, ?, ?)',
+  ).run(groupFolder, threadTs, sessionId);
 }
 
-export function deleteSession(groupFolder: string): void {
-  db.prepare('DELETE FROM sessions WHERE group_folder = ?').run(groupFolder);
+export function deleteSession(
+  groupFolder: string,
+  threadTs: string = '',
+): void {
+  db.prepare(
+    'DELETE FROM sessions WHERE group_folder = ? AND thread_ts = ?',
+  ).run(groupFolder, threadTs);
 }
 
-export function getAllSessions(): Record<string, string> {
+export function getAllSessions(): Record<string, Record<string, string>> {
   const rows = db
-    .prepare('SELECT group_folder, session_id FROM sessions')
-    .all() as Array<{ group_folder: string; session_id: string }>;
-  const result: Record<string, string> = {};
+    .prepare('SELECT group_folder, thread_ts, session_id FROM sessions')
+    .all() as Array<{
+    group_folder: string;
+    thread_ts: string;
+    session_id: string;
+  }>;
+  const result: Record<string, Record<string, string>> = {};
   for (const row of rows) {
-    result[row.group_folder] = row.session_id;
+    if (!result[row.group_folder]) result[row.group_folder] = {};
+    result[row.group_folder][row.thread_ts] = row.session_id;
   }
   return result;
 }
@@ -735,8 +782,10 @@ function migrateJsonState(): void {
     string
   > | null;
   if (sessions) {
+    // Legacy JSON file had no thread concept — migrate into the default
+    // (non-threaded) slot for each group.
     for (const [folder, sessionId] of Object.entries(sessions)) {
-      setSession(folder, sessionId);
+      setSession(folder, '', sessionId);
     }
   }
 
