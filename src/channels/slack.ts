@@ -118,7 +118,8 @@ export class SlackChannel implements Channel {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
       // We filter on subtype first, then narrow to the two types we handle.
       const subtype = (event as { subtype?: string }).subtype;
-      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share') return;
+      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share')
+        return;
 
       // After filtering, event is either GenericMessageEvent or BotMessageEvent
       const msg = event as HandledMessageEvent;
@@ -216,7 +217,10 @@ export class SlackChannel implements Channel {
       if (!effectiveIsBotMessage && msgFiles && msgFiles.length > 0) {
         const group = this.opts.registeredGroups()[jid];
         if (group) {
-          const filePaths = await this.downloadAttachments(msgFiles, group.folder);
+          const filePaths = await this.downloadAttachments(
+            msgFiles,
+            group.folder,
+          );
           if (filePaths.length > 0) {
             content +=
               '\n' + filePaths.map((p) => `[Attachment: ${p}]`).join('\n');
@@ -256,7 +260,13 @@ export class SlackChannel implements Channel {
     // Also registers a reconnect listener so backfill runs again after every
     // sleep/wake cycle (Socket Mode reconnects without restarting the process).
     await this.backfillMissedMessages();
-    const socketClient = (this.app as unknown as { receiver?: { client?: { on?: (event: string, cb: () => void) => void } } }).receiver?.client;
+    const socketClient = (
+      this.app as unknown as {
+        receiver?: {
+          client?: { on?: (event: string, cb: () => void) => void };
+        };
+      }
+    ).receiver?.client;
     if (socketClient?.on) {
       socketClient.on('connected', () => {
         this.backfillMissedMessages().catch((err) =>
@@ -265,17 +275,22 @@ export class SlackChannel implements Channel {
       });
       logger.info('Slack: reconnect backfill listener registered');
     } else {
-      logger.warn('Slack: reconnect listener could not be registered — periodic backfill is the only wake-recovery mechanism');
+      logger.warn(
+        'Slack: reconnect listener could not be registered — periodic backfill is the only wake-recovery mechanism',
+      );
     }
 
     // Periodic backfill runs every 2 minutes as a safety net for sleep/wake cycles,
     // missed reconnect events, and any gaps in Socket Mode delivery.
     // storeMessage uses INSERT OR REPLACE so re-storing seen messages is safe.
-    this.periodicBackfillTimer = setInterval(() => {
-      this.backfillMissedMessages().catch((err) =>
-        logger.warn({ err }, 'Periodic Slack backfill failed'),
-      );
-    }, 2 * 60 * 1000);
+    this.periodicBackfillTimer = setInterval(
+      () => {
+        this.backfillMissedMessages().catch((err) =>
+          logger.warn({ err }, 'Periodic Slack backfill failed'),
+        );
+      },
+      2 * 60 * 1000,
+    );
 
     this.connected = true;
 
@@ -434,7 +449,7 @@ export class SlackChannel implements Channel {
     const lastTs = this.opts.getLastTimestamp();
     const oldest = lastTs
       ? (new Date(lastTs).getTime() / 1000).toString()
-      : ((Date.now() / 1000) - 216000).toString(); // first run: look back 60 hours
+      : (Date.now() / 1000 - 216000).toString(); // first run: look back 60 hours
 
     const groups = this.opts.registeredGroups();
     const mentionPattern = `<@${this.botUserId}>`;
@@ -466,15 +481,22 @@ export class SlackChannel implements Channel {
           const userId = (msg as { user?: string }).user || '';
 
           // Skip our own messages
-          if (msgBotId === this.botUserId || userId === this.botUserId) continue;
+          if (msgBotId === this.botUserId || userId === this.botUserId)
+            continue;
 
-          const isTrustedBot = !!msgBotId && this.trustedBotIds.includes(msgBotId);
+          const isTrustedBot =
+            !!msgBotId && this.trustedBotIds.includes(msgBotId);
           const hasMention = !!mentionPattern && text.includes(mentionPattern);
 
           // Trusted bots trigger without @mention; everyone else needs one
           if (!isTrustedBot && !hasMention) continue;
           // Mention-required bots still need the @mention even in backfill
-          if (msgBotId && this.mentionRequiredBotIds.includes(msgBotId) && !hasMention) continue;
+          if (
+            msgBotId &&
+            this.mentionRequiredBotIds.includes(msgBotId) &&
+            !hasMention
+          )
+            continue;
 
           const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
           const senderName =
@@ -491,9 +513,13 @@ export class SlackChannel implements Channel {
           if (files && files.length > 0) {
             const group = groups[jid];
             if (group) {
-              const filePaths = await this.downloadAttachments(files, group.folder);
+              const filePaths = await this.downloadAttachments(
+                files,
+                group.folder,
+              );
               if (filePaths.length > 0) {
-                content += '\n' + filePaths.map((p) => `[Attachment: ${p}]`).join('\n');
+                content +=
+                  '\n' + filePaths.map((p) => `[Attachment: ${p}]`).join('\n');
               }
             }
           }
