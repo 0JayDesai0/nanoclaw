@@ -471,7 +471,8 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__github__*',
-        'mcp__snowflake__*'
+        'mcp__snowflake__*',
+        'mcp__notion__*'
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -514,6 +515,21 @@ async function runQuery(
               '--database', process.env.SNOWFLAKE_DATABASE || '',
               '--schema', process.env.SNOWFLAKE_SCHEMA || '',
             ],
+          },
+        } : {}),
+        ...(process.env.NOTION_TOKEN ? {
+          notion: {
+            command: 'node',
+            args: ['/app/node_modules/@notionhq/notion-mcp-server/bin/cli.mjs'],
+            // The Notion MCP server uses axios under the hood, which doesn't
+            // play nicely with the OneCLI gateway's MITM TLS interception
+            // (returns empty 400). OneCLI has no Notion secret to inject
+            // anyway, so we route Notion API calls directly via NO_PROXY.
+            env: {
+              NOTION_TOKEN: process.env.NOTION_TOKEN,
+              NO_PROXY: 'api.notion.com',
+              no_proxy: 'api.notion.com',
+            },
           },
         } : {}),
       },

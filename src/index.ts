@@ -368,12 +368,14 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         }
 
         if (result.status === 'success') {
-          // Only signal idle after the last thread group. Signalling idle between
-          // groups sets idleWaiting=true, which causes closeStdin to be called if
-          // a new message arrives while a subsequent container is still running —
-          // prematurely killing it before it can send its thread reply.
           if (isLastThreadGroup) {
+            // Signal idle after the last thread group so the container stays
+            // alive for follow-up IPC messages.
             queue.notifyIdle(chatJid);
+          } else {
+            // Close the container immediately between thread groups so the next
+            // thread doesn't have to wait out the full 30-minute idle timeout.
+            queue.closeStdin(chatJid);
           }
         }
 
@@ -775,6 +777,8 @@ async function main(): Promise<void> {
       isGroup?: boolean,
     ) => storeChatMetadata(chatJid, timestamp, name, channel, isGroup),
     registeredGroups: () => registeredGroups,
+    getLastTimestamp: () => lastTimestamp,
+    onBackfillComplete: recoverPendingMessages,
   };
 
   // Create and connect all registered channels.

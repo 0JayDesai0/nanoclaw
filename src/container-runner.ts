@@ -135,6 +135,17 @@ function buildVolumeMounts(
         readonly: true,
       });
     }
+
+    // Non-main containers don't get /workspace/project, so mount keys/
+    // separately so the Snowflake MCP server can find its private key.
+    const keysDir = path.join(projectRoot, 'keys');
+    if (fs.existsSync(keysDir)) {
+      mounts.push({
+        hostPath: keysDir,
+        containerPath: '/workspace/keys',
+        readonly: true,
+      });
+    }
   }
 
   // Per-group Claude sessions directory (isolated from other groups)
@@ -248,6 +259,7 @@ function buildVolumeMounts(
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  isMain: boolean,
   agentIdentifier?: string,
 ): Promise<string[]> {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
@@ -264,6 +276,12 @@ async function buildContainerArgs(
       '-e',
       `GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}`,
     );
+  }
+
+  // Pass Notion integration token if configured, so the Notion MCP server can authenticate
+  const { NOTION_TOKEN } = readEnvFile(['NOTION_TOKEN']);
+  if (NOTION_TOKEN) {
+    args.push('-e', `NOTION_TOKEN=${NOTION_TOKEN}`);
   }
 
   // Pass Snowflake credentials if configured, so the Snowflake MCP server can authenticate.
@@ -294,10 +312,12 @@ async function buildContainerArgs(
       args.push('-e', `SNOWFLAKE_PASSWORD=${SNOWFLAKE_PASSWORD}`);
     }
     if (SNOWFLAKE_PRIVATE_KEY_PATH) {
-      args.push(
-        '-e',
-        `SNOWFLAKE_PRIVATE_KEY_PATH=${SNOWFLAKE_PRIVATE_KEY_PATH}`,
-      );
+      // Main containers have /workspace/project mounted so the path from .env
+      // works as-is. Non-main containers get keys/ at /workspace/keys instead.
+      const effectiveKeyPath = isMain
+        ? SNOWFLAKE_PRIVATE_KEY_PATH
+        : `/workspace/keys/${path.basename(SNOWFLAKE_PRIVATE_KEY_PATH)}`;
+      args.push('-e', `SNOWFLAKE_PRIVATE_KEY_PATH=${effectiveKeyPath}`);
     }
     args.push('-e', `SNOWFLAKE_WAREHOUSE=${SNOWFLAKE_WAREHOUSE}`);
     args.push('-e', `SNOWFLAKE_ROLE=${SNOWFLAKE_ROLE}`);
@@ -367,6 +387,7 @@ export async function runContainerAgent(
   const containerArgs = await buildContainerArgs(
     mounts,
     containerName,
+    input.isMain,
     agentIdentifier,
   );
 
