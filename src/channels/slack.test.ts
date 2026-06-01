@@ -24,6 +24,7 @@ vi.mock('../logger.js', () => ({
 // Mock db
 vi.mock('../db.js', () => ({
   updateChatName: vi.fn(),
+  getActiveThreadRoots: vi.fn(() => []),
 }));
 
 // --- @slack/bolt mock ---

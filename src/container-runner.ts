@@ -524,6 +524,21 @@ export async function runContainerAgent(
         { group: group.name, containerName },
         'Container timeout, stopping gracefully',
       );
+
+      // After 10s, force-kill the docker process directly so the close event
+      // fires promptly regardless of Docker daemon latency. docker stop -t 1
+      // should already be fast, but on slow or loaded hosts it can drift
+      // minutes past the intended deadline.
+      const hardKill = setTimeout(() => {
+        if (!container.killed) {
+          logger.warn(
+            { group: group.name, containerName },
+            'Hard killing container process after grace period',
+          );
+          container.kill('SIGKILL');
+        }
+      }, 10_000);
+
       try {
         stopContainer(containerName);
       } catch (err) {
@@ -531,6 +546,7 @@ export async function runContainerAgent(
           { group: group.name, containerName, err },
           'Graceful stop failed, force killing',
         );
+        clearTimeout(hardKill);
         container.kill('SIGKILL');
       }
     };

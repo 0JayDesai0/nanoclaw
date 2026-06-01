@@ -75,6 +75,12 @@ let registeredGroups: Record<string, RegisteredGroup> = {};
 let lastAgentTimestamp: Record<string, string> = {};
 let messageLoopRunning = false;
 
+// IPC send notification: processGroupMessages registers a callback so that
+// IPC-originated Slack sends (mcp__nanoclaw__send_message) are counted as
+// output alongside result.result sends. Without this, agents that respond
+// entirely via IPC would appear silent and trigger a spurious cursor rollback.
+const onIpcSendCallbacks = new Map<string, () => void>();
+
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 
@@ -312,6 +318,12 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   let anyOutputSent = false;
   let anySuccess = false;
+  let anyHardError = false;
+  // Track which thread groups produced output so we can warn on silent success.
+  const silentTriggerThreads: Array<{
+    replyThreadTs: string | undefined;
+    messageId: string;
+  }> = [];
 
   for (let tIdx = 0; tIdx < threadGroups.length; tIdx++) {
     const { replyThreadTs, messages } = threadGroups[tIdx];
@@ -334,6 +346,13 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     await channel.setTyping?.(chatJid, true);
     let hadError = false;
     let outputSentToUser = false;
+
+    // Register IPC send notification for this thread so mcp__nanoclaw__send_message
+    // calls are counted as output alongside result.result sends.
+    onIpcSendCallbacks.set(chatJid, () => {
+      outputSentToUser = true;
+      anyOutputSent = true;
+    });
 
     const output = await runAgent(
       group,
@@ -387,10 +406,24 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     );
 
     await channel.setTyping?.(chatJid, false);
+    onIpcSendCallbacks.delete(chatJid);
     if (idleTimer) clearTimeout(idleTimer);
 
     if (output !== 'error' && !hadError) {
       anySuccess = true;
+      if (!outputSentToUser) {
+        // Agent exited cleanly but produced no visible output for this thread.
+        // This can happen when an edge-case rule applies (e.g. "before 7am")
+        // and the agent uses only <internal> reasoning or returns no result text.
+        // Track it so we can warn and roll back if ALL threads are silent.
+        const triggerMsg = messages.find(
+          (m) => !m.is_bot_message && !m.is_from_me,
+        );
+        silentTriggerThreads.push({
+          replyThreadTs,
+          messageId: triggerMsg?.id ?? replyThreadTs ?? 'unknown',
+        });
+      }
     } else if (!outputSentToUser) {
       logger.warn(
         { group: group.name, replyThreadTs },
@@ -406,15 +439,36 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }
   }
 
-  if (!anySuccess && !anyOutputSent) {
-    // Every thread group failed with no output — roll back so all messages retry
+  if (!anyOutputSent) {
+    // No thread group produced any output — either all failed or all exited
+    // silently. Roll back so every message retries on the next poll.
     lastAgentTimestamp[chatJid] = previousCursor;
     saveState();
     logger.warn(
-      { group: group.name },
-      'All thread groups failed, rolled back message cursor for retry',
+      {
+        group: group.name,
+        hadSuccess: anySuccess,
+        silentThreads: silentTriggerThreads,
+      },
+      anySuccess
+        ? 'All thread groups completed silently (no output), rolled back message cursor for retry'
+        : 'All thread groups failed, rolled back message cursor for retry',
     );
     return false;
+  }
+
+  if (silentTriggerThreads.length > 0) {
+    // Some threads produced output but others were silent. The cursor has
+    // advanced past the silent ones, so they won't auto-retry. Emit a
+    // prominent warning so the issue is visible in logs.
+    logger.warn(
+      {
+        group: group.name,
+        silentThreads: silentTriggerThreads,
+        advancedCursorTo: lastAgentTimestamp[chatJid],
+      },
+      'WARNING: some trigger threads produced no output and the cursor has advanced past them — manual intervention may be needed',
+    );
   }
 
   return true;
@@ -823,6 +877,9 @@ async function main(): Promise<void> {
     sendMessage: (jid, text, opts) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      // Notify processGroupMessages that output was sent for this JID so
+      // IPC-originated sends are counted alongside result.result sends.
+      onIpcSendCallbacks.get(jid)?.();
       return channel.sendMessage(jid, text, opts);
     },
     registeredGroups: () => registeredGroups,

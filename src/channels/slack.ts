@@ -5,7 +5,7 @@ import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
-import { updateChatName } from '../db.js';
+import { getActiveThreadRoots, updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
@@ -455,106 +455,193 @@ export class SlackChannel implements Channel {
     const mentionPattern = `<@${this.botUserId}>`;
     let backfilled = 0;
 
+    // Threads with activity in the last 7 days are considered "active". Each
+    // active thread costs one conversations.replies call per backfill cycle,
+    // and Slack's Tier 3 rate limit (~50 req/min) is shared with
+    // conversations.history. With too many active threads, the SDK's automatic
+    // retry-on-429 stretches one backfill cycle to over an hour, blocking new
+    // top-level messages from being fetched until it finally completes.
+    const threadActiveSince = new Date(
+      Date.now() - 7 * 24 * 60 * 60 * 1000,
+    ).toISOString();
+
     for (const [jid, _group] of Object.entries(groups)) {
       if (!jid.startsWith('slack:')) continue;
       const channelId = jid.replace('slack:', '');
+      const channelStart = Date.now();
+      let channelStored = 0;
+      let historyCount = 0;
+      let repliesCount = 0;
+
+      // 1. Top-level channel messages
       try {
         const result = await this.app.client.conversations.history({
           channel: channelId,
           oldest,
           limit: 100,
         });
-
-        // Slack returns messages newest-first. We do all async work (name
-        // resolution, file downloads) up front, then store in oldest-first
-        // order. This prevents a race where the main poll loop fires mid-batch,
-        // advances last_timestamp to a newer message, and permanently loses
-        // older messages that haven't been stored yet.
-        type PendingMsg = Parameters<typeof this.opts.onMessage>[1];
-        const pending: PendingMsg[] = [];
-
-        for (const msg of result.messages || []) {
-          if (!msg.ts) continue;
-          const text = (msg as { text?: string }).text || '';
-          const files = (msg as { files?: SlackFile[] }).files;
-          const msgBotId = (msg as { bot_id?: string }).bot_id;
-          const userId = (msg as { user?: string }).user || '';
-
-          // Skip our own messages
-          if (msgBotId === this.botUserId || userId === this.botUserId)
-            continue;
-
-          const isTrustedBot =
-            !!msgBotId && this.trustedBotIds.includes(msgBotId);
-          const hasMention = !!mentionPattern && text.includes(mentionPattern);
-
-          // Trusted bots trigger without @mention; everyone else needs one
-          if (!isTrustedBot && !hasMention) continue;
-          // Mention-required bots still need the @mention even in backfill
-          if (
-            msgBotId &&
-            this.mentionRequiredBotIds.includes(msgBotId) &&
-            !hasMention
-          )
-            continue;
-
-          const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
-          const senderName =
-            (userId ? await this.resolveUserName(userId) : undefined) ||
-            userId ||
-            'unknown';
-
-          let content = text;
-          if (!TRIGGER_PATTERN.test(content)) {
-            content = `@${ASSISTANT_NAME} ${content}`;
-          }
-
-          // Download any attached files
-          if (files && files.length > 0) {
-            const group = groups[jid];
-            if (group) {
-              const filePaths = await this.downloadAttachments(
-                files,
-                group.folder,
-              );
-              if (filePaths.length > 0) {
-                content +=
-                  '\n' + filePaths.map((p) => `[Attachment: ${p}]`).join('\n');
-              }
-            }
-          }
-
-          const replyThreadTs =
-            (msg as { thread_ts?: string }).thread_ts || msg.ts;
-
-          pending.push({
-            id: msg.ts,
-            chat_jid: jid,
-            sender: userId,
-            sender_name: senderName,
-            content,
-            timestamp,
-            is_from_me: false,
-            is_bot_message: false,
-            reply_thread_ts: replyThreadTs,
-          });
-        }
-
-        // Store oldest-first so last_timestamp advances monotonically and
-        // the main loop never skips an older message.
-        pending.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-        for (const msg of pending) {
-          this.opts.onMessage(jid, msg);
-          backfilled++;
-        }
+        historyCount = (result.messages || []).length;
+        const stored = await this.storeBackfilledMessages(
+          jid,
+          result.messages || [],
+          mentionPattern,
+          groups,
+        );
+        channelStored += stored;
+        backfilled += stored;
       } catch (err) {
         logger.warn({ err, jid }, 'Backfill: failed to fetch Slack history');
+      }
+
+      // 2. Thread replies for known active threads. Each thread uses its own
+      // per-thread cursor (timestamp of the last reply we have stored) so we
+      // catch replies sent before the global last_timestamp cursor advanced.
+      const threads = getActiveThreadRoots(jid, threadActiveSince);
+      for (const { threadTs, lastSeenTs } of threads) {
+        const threadOldest = (new Date(lastSeenTs).getTime() / 1000).toString();
+        try {
+          const repliesResult = await this.app.client.conversations.replies({
+            channel: channelId,
+            ts: threadTs,
+            oldest: threadOldest,
+            limit: 100,
+          });
+          repliesCount += (repliesResult.messages || []).length;
+          const stored = await this.storeBackfilledMessages(
+            jid,
+            repliesResult.messages || [],
+            mentionPattern,
+            groups,
+            threadTs,
+          );
+          channelStored += stored;
+          backfilled += stored;
+        } catch (err) {
+          logger.warn(
+            { err, jid, threadTs },
+            'Backfill: failed to fetch thread replies',
+          );
+        }
+      }
+
+      const channelMs = Date.now() - channelStart;
+      // Log per-channel timing so rate-limit-induced slowdowns are visible.
+      // Only log channels that did real work or took unusually long.
+      if (channelMs > 5000 || channelStored > 0) {
+        logger.info(
+          {
+            jid,
+            durationMs: channelMs,
+            historyCount,
+            threadsChecked: threads.length,
+            repliesCount,
+            stored: channelStored,
+          },
+          'Backfill: channel done',
+        );
       }
     }
 
     if (backfilled > 0) {
       logger.info({ backfilled }, 'Backfilled missed Slack messages');
     }
+  }
+
+  /**
+   * Filter and store messages returned by conversations.history or
+   * conversations.replies. Returns the number of messages stored.
+   *
+   * Pass `forceThreadTs` when processing conversations.replies output so the
+   * thread root itself (returned as the first message) is skipped and replies
+   * get the correct reply_thread_ts regardless of Slack's response shape.
+   */
+  private async storeBackfilledMessages(
+    jid: string,
+    messages: Array<unknown>,
+    mentionPattern: string,
+    groups: Record<string, RegisteredGroup>,
+    forceThreadTs?: string,
+  ): Promise<number> {
+    type PendingMsg = Parameters<typeof this.opts.onMessage>[1];
+    const pending: PendingMsg[] = [];
+
+    for (const m of messages) {
+      const msg = m as {
+        ts?: string;
+        text?: string;
+        user?: string;
+        bot_id?: string;
+        thread_ts?: string;
+        files?: SlackFile[];
+      };
+      if (!msg.ts) continue;
+      // Skip thread root when processing replies (it's echoed as msg[0])
+      if (forceThreadTs && msg.ts === forceThreadTs) continue;
+
+      const text = msg.text || '';
+      const files = msg.files;
+      const msgBotId = msg.bot_id;
+      const userId = msg.user || '';
+
+      // Skip our own messages
+      if (msgBotId === this.botUserId || userId === this.botUserId) continue;
+
+      const isTrustedBot = !!msgBotId && this.trustedBotIds.includes(msgBotId);
+      const hasMention = !!mentionPattern && text.includes(mentionPattern);
+
+      // Trusted bots trigger without @mention; everyone else needs one
+      if (!isTrustedBot && !hasMention) continue;
+      // Mention-required bots still need the @mention even in backfill
+      if (
+        msgBotId &&
+        this.mentionRequiredBotIds.includes(msgBotId) &&
+        !hasMention
+      )
+        continue;
+
+      const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
+      const senderName =
+        (userId ? await this.resolveUserName(userId) : undefined) ||
+        userId ||
+        'unknown';
+
+      let content = text;
+      if (!TRIGGER_PATTERN.test(content)) {
+        content = `@${ASSISTANT_NAME} ${content}`;
+      }
+
+      if (files && files.length > 0) {
+        const group = groups[jid];
+        if (group) {
+          const filePaths = await this.downloadAttachments(files, group.folder);
+          if (filePaths.length > 0) {
+            content +=
+              '\n' + filePaths.map((p) => `[Attachment: ${p}]`).join('\n');
+          }
+        }
+      }
+
+      const replyThreadTs = forceThreadTs || msg.thread_ts || msg.ts;
+
+      pending.push({
+        id: msg.ts,
+        chat_jid: jid,
+        sender: userId,
+        sender_name: senderName,
+        content,
+        timestamp,
+        is_from_me: false,
+        is_bot_message: false,
+        reply_thread_ts: replyThreadTs,
+      });
+    }
+
+    // Store oldest-first so last_timestamp advances monotonically
+    pending.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+    for (const msg of pending) {
+      this.opts.onMessage(jid, msg);
+    }
+    return pending.length;
   }
 
   private async downloadAttachments(
