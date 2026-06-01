@@ -440,6 +440,38 @@ export function getLastBotMessageTimestamp(
   return row?.ts ?? undefined;
 }
 
+/**
+ * Return known active threads in a channel and the timestamp of the most recent
+ * message we have for each. Used by the Slack backfill to fetch thread replies
+ * via conversations.replies — these are invisible to conversations.history.
+ *
+ * Per-thread cursor (lastSeenTs) lets us catch replies sent before the global
+ * last_timestamp cursor advanced, which would otherwise be permanently lost.
+ */
+export function getActiveThreadRoots(
+  chatJid: string,
+  activeSinceTimestamp: string,
+  limit: number = 5,
+): Array<{ threadTs: string; lastSeenTs: string }> {
+  const rows = db
+    .prepare(
+      `SELECT reply_thread_ts as threadTs, MAX(timestamp) as lastSeenTs
+       FROM messages
+       WHERE chat_jid = ?
+         AND reply_thread_ts IS NOT NULL
+         AND reply_thread_ts != ''
+       GROUP BY reply_thread_ts
+       HAVING MAX(timestamp) >= ?
+       ORDER BY lastSeenTs DESC
+       LIMIT ?`,
+    )
+    .all(chatJid, activeSinceTimestamp, limit) as Array<{
+    threadTs: string;
+    lastSeenTs: string;
+  }>;
+  return rows;
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
 ): void {
