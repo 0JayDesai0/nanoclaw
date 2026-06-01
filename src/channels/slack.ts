@@ -498,9 +498,7 @@ export class SlackChannel implements Channel {
       // catch replies sent before the global last_timestamp cursor advanced.
       const threads = getActiveThreadRoots(jid, threadActiveSince);
       for (const { threadTs, lastSeenTs } of threads) {
-        const threadOldest = (
-          new Date(lastSeenTs).getTime() / 1000
-        ).toString();
+        const threadOldest = (new Date(lastSeenTs).getTime() / 1000).toString();
         try {
           const repliesResult = await this.app.client.conversations.replies({
             channel: channelId,
@@ -588,8 +586,7 @@ export class SlackChannel implements Channel {
       // Skip our own messages
       if (msgBotId === this.botUserId || userId === this.botUserId) continue;
 
-      const isTrustedBot =
-        !!msgBotId && this.trustedBotIds.includes(msgBotId);
+      const isTrustedBot = !!msgBotId && this.trustedBotIds.includes(msgBotId);
       const hasMention = !!mentionPattern && text.includes(mentionPattern);
 
       // Trusted bots trigger without @mention; everyone else needs one
@@ -616,10 +613,7 @@ export class SlackChannel implements Channel {
       if (files && files.length > 0) {
         const group = groups[jid];
         if (group) {
-          const filePaths = await this.downloadAttachments(
-            files,
-            group.folder,
-          );
+          const filePaths = await this.downloadAttachments(files, group.folder);
           if (filePaths.length > 0) {
             content +=
               '\n' + filePaths.map((p) => `[Attachment: ${p}]`).join('\n');

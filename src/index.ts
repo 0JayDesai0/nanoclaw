@@ -416,7 +416,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         // This can happen when an edge-case rule applies (e.g. "before 7am")
         // and the agent uses only <internal> reasoning or returns no result text.
         // Track it so we can warn and roll back if ALL threads are silent.
-        const triggerMsg = messages.find((m) => !m.is_bot_message && !m.is_from_me);
+        const triggerMsg = messages.find(
+          (m) => !m.is_bot_message && !m.is_from_me,
+        );
         silentTriggerThreads.push({
           replyThreadTs,
           messageId: triggerMsg?.id ?? replyThreadTs ?? 'unknown',
