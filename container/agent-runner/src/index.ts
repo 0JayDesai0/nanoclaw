@@ -117,11 +117,21 @@ async function readStdin(): Promise<string> {
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const HEARTBEAT_MARKER = '---NANOCLAW_HEARTBEAT---';
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
+}
+
+// Emit a heartbeat to stdout so the host resets its hard idle-timeout while the
+// agent is actively working. A single turn (tool calls, thinking) can run for
+// many minutes without producing a `result`; without this the host would reap
+// the container mid-turn. The host treats this marker as activity only — it
+// resets the timer but produces no channel output.
+function writeHeartbeat(): void {
+  console.log(HEARTBEAT_MARKER);
 }
 
 function log(message: string): void {
@@ -541,6 +551,8 @@ async function runQuery(
     },
   })) {
     messageCount++;
+    // Each SDK message is a sign of activity — reset the host's hard timeout.
+    writeHeartbeat();
     const msgType =
       message.type === 'system'
         ? `system/${(message as { subtype?: string }).subtype}`

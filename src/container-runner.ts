@@ -35,6 +35,9 @@ const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+// Activity-only marker: the agent emits this on each SDK message during a turn.
+// It resets the hard idle-timeout but produces no channel output.
+const HEARTBEAT_MARKER = '---NANOCLAW_HEARTBEAT---';
 
 export interface ContainerInput {
   prompt: string;
@@ -458,6 +461,16 @@ export async function runContainerAgent(
       // Stream-parse for output markers
       if (onOutput) {
         parseBuffer += chunk;
+
+        // Heartbeats signal the agent is actively working mid-turn. Reset the
+        // hard timeout and strip them so they don't interfere with marker
+        // parsing or grow the buffer unbounded. Partial markers split across
+        // chunks stay buffered until complete.
+        if (parseBuffer.includes(HEARTBEAT_MARKER)) {
+          resetTimeout();
+          parseBuffer = parseBuffer.split(HEARTBEAT_MARKER).join('');
+        }
+
         let startIdx: number;
         while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
           const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
@@ -496,7 +509,7 @@ export async function runContainerAgent(
         if (line) logger.debug({ container: group.folder }, line);
       }
       // Don't reset timeout on stderr — SDK writes debug logs continuously.
-      // Timeout only resets on actual output (OUTPUT_MARKER in stdout).
+      // Timeout only resets on stdout markers (OUTPUT_MARKER or HEARTBEAT_MARKER).
       if (stderrTruncated) return;
       const remaining = CONTAINER_MAX_OUTPUT_SIZE - stderr.length;
       if (chunk.length > remaining) {
