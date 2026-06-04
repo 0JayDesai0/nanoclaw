@@ -630,6 +630,18 @@ export function setRouterState(key: string, value: string): void {
   ).run(key, value);
 }
 
+export function getActiveThreadsForBackfill(chatJid: string): string[] {
+  const lookback = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT DISTINCT reply_thread_ts FROM messages
+       WHERE chat_jid = ? AND reply_thread_ts IS NOT NULL AND reply_thread_ts != ''
+       AND timestamp > ?`,
+    )
+    .all(chatJid, lookback) as Array<{ reply_thread_ts: string }>;
+  return rows.map((r) => r.reply_thread_ts);
+}
+
 // --- Session accessors ---
 
 export function getSession(
