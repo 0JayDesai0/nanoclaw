@@ -451,7 +451,7 @@ export function getLastBotMessageTimestamp(
 export function getActiveThreadRoots(
   chatJid: string,
   activeSinceTimestamp: string,
-  limit: number = 5,
+  limit: number = 50,
 ): Array<{ threadTs: string; lastSeenTs: string }> {
   const rows = db
     .prepare(
